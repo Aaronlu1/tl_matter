@@ -98,8 +98,18 @@ def parse_compile_db(path, out_dir):
             if t == "-o" and i + 1 < len(toks):
                 obj = toks[i + 1]
                 break
-        if obj and e.get("file"):
-            src_for_obj[os.path.normpath(os.path.join(out_dir, obj))] = e["file"]
+        if not obj or not e.get("file"):
+            continue
+
+        # Both the -o value and the file are relative to the entry's own
+        # "directory" field, not to the process working directory. GN emits
+        # them as ../../../../src/lib/support/Base64.cpp and similar. Resolving
+        # them against anything else -- or leaving them relative -- makes the
+        # later os.path.isfile() check reject every one of them.
+        entry_dir = e.get("directory") or out_dir
+        obj_abs = os.path.normpath(os.path.join(entry_dir, obj))
+        src_abs = os.path.normpath(os.path.join(entry_dir, e["file"]))
+        src_for_obj[obj_abs] = src_abs
     return src_for_obj
 
 
