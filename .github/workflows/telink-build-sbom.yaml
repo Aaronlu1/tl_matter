@@ -119,265 +119,29 @@ jobs:
             # already passes --add-export-compile-commands=*, so a compile
             # database should exist somewhere under the build tree. This step
             # finds out where, and what it contains.
-            - name: Locate GN compile database
-              if: always()
-              run: |
-                  echo "=== compile_commands.json anywhere under the build tree ==="
-                  find . -name 'compile_commands.json' -type f 2>/dev/null | while read -r f; do
-                    printf '   %-70s %s bytes\n' "$f" "$(stat -c%s "$f" 2>/dev/null)"
-                  done
-                  echo
-                  echo "=== chip-gn external project directory ==="
-                  find out -maxdepth 7 -type d -name 'chip-gn*' 2>/dev/null | head -10
-                  echo
-                  echo "=== .ninja files under the Matter build dir (shows it ran) ==="
-                  find out -maxdepth 7 -name 'build.ninja' 2>/dev/null | head -10
-
-            - name: Inspect GN compile database
-              if: always()
-              run: |
-                  db="$(find . -name 'compile_commands.json' -type f 2>/dev/null | head -1)"
-                  if [ -z "$db" ]; then
-                    echo "NOT FOUND -- option A is not viable without a code change"
-                    exit 0
-                  fi
-                  echo "using: $db"
-                  python3 - "$db" <<'PY'
-                  import json, sys, collections, os
-                  entries = json.load(open(sys.argv[1]))
-
-                  # GN emits paths relative to each entry's own "directory",
-                  # so normalise before grouping -- otherwise the first pass
-                  # collapsed everything into "../../..".
-                  abs_files = []
-                  for e in entries:
-                      f = e.get("file", "")
-                      d = e.get("directory", "")
-                      abs_files.append(os.path.normpath(os.path.join(d, f)))
-
-                  print(f"entries           : {len(entries)}")
-                  print("distinct dirs     :", len({os.path.dirname(f) for f in abs_files}))
-                  print()
-
-                  # The repo root is the deepest common ancestor of the
-                  # absolute paths.
-                  root = os.path.commonpath(abs_files) if abs_files else ""
-                  if not os.path.isdir(root):
-                      root = os.path.commonpath([os.path.dirname(f) for f in abs_files])
-                  print(f"inferred repo root: {root}")
-                  print()
-
-                  rel = [os.path.relpath(f, root) for f in abs_files]
-                  print("compiled files by top-level area:")
-                  areas = collections.Counter(p.split(os.sep)[0] for p in rel)
-                  for k, n in areas.most_common(15):
-                      print(f"   {n:5d}  {k}")
-
-                  print()
-                  print("Matter sources vs everything else:")
-                  for label, pred in [
-                      ("src/ (Matter stack)", lambda p: p.startswith("src" + os.sep)),
-                      ("third_party/",         lambda p: p.startswith("third_party" + os.sep)),
-                      ("_test / _fuzz files",  lambda p: "_test." in p or "_fuzz" in p or "test/" in p),
-                  ]:
-                      print(f"   {sum(1 for p in rel if pred(p)):5d}  {label}")
-
-                  print()
-                  print("sample NON-test entries (these are what we want):")
-                  shown = 0
-                  for p in rel:
-                      if "_test." in p or "/test" in p or "_fuzz" in p:
-                          continue
-                      print("   ", p)
-                      shown += 1
-                      if shown >= 8:
-                          break
-                  if shown == 0:
-                      print("    (none -- the database may only cover host tooling)")
-                  PY
-
-            # DIAGNOSTIC (read-only, remove once answered).
+            # The Matter stack is built by GN through ExternalProject_Add, so
+            # zspdx (which walks the CMake codemodel) cannot see it: the whole
+            # protocol stack appears as one opaque package with FilesAnalyzed:
+            # false. This recovers the real file list.
             #
-            # The GN compile database is broader than the firmware: it carries
-            # compile commands for every target in the GN build graph, while
-            # ninja only builds the closure of //config/telink/chip-gn:telink.
-            # That is why 415 of its 999 entries are test/fuzz files --
-            # args.gni sets chip_build_tests = false, so those targets exist in
-            # the graph but are not linked in.
-            #
-            # gn desc walks the dependency closure, so it can tell us which
-            # files actually went into the firmware. This step finds out
-            # whether gn desc is usable here and how big the closure is.
-            - name: Probe GN dependency closure
-              if: always()
+            # .ninja_log is the discriminator, not compile_commands.json. The
+            # database lists what gn *could* build and includes test targets
+            # that chip_build_tests = false keeps out of the firmware -- 711 of
+            # its 999 entries are never built. gn desc and a compiler filter
+            # were both tried and both failed. ninja's own log records what it
+            # actually ran: 288 sources for this build, zero test files.
+            - name: Generate Matter source SBOM from the GN build
               run: |
-                  OUT=out/telink-build/modules/chip-module
-                  ROOT=//config/telink/chip-gn:telink
+                  GN_OUT=out/telink-build/modules/chip-module
+                  REV="$(git rev-parse HEAD)"
+                  python3 scripts/tools/telink/gn_sources_to_spdx.py \
+                    --ninja-log "$GN_OUT/.ninja_log" \
+                    --compile-db "$GN_OUT/compile_commands.json" \
+                    --repo-root "$PWD" \
+                    --out out/sbom/matter-sources.spdx \
+                    --purl "pkg:github/${GITHUB_REPOSITORY}@$REV" \
+                    --version "$REV"
 
-                  echo "=== gn available? ==="
-                  command -v gn && gn --version || echo "gn NOT on PATH"
-
-                  echo
-                  echo "=== GN out dir contents ==="
-                  ls "$OUT" 2>/dev/null | head -20
-
-                  echo
-                  echo "=== project.json already present? ==="
-                  ls -la "$OUT/project.json" 2>/dev/null \
-                    || echo "absent -- gn gen was not run with --ide=json"
-
-                  # gn must run inside the Matter build environment: BUILD.gn
-                  # imports pigweed's pigweed_environment.gni, which resolves
-                  # $_PW_ACTUAL_ENVIRONMENT_ROOT. Outside that environment the
-                  # variable is empty and gn fails with
-                  #   Unable to load "/build_overrides/pigweed_environment.gni"
-                  # Redirects go inside the quoted command because
-                  # run_in_build_env.sh prints its own banner to stdout.
-                  echo
-                  echo "=== direct deps of the root target ==="
-                  ./scripts/run_in_build_env.sh \
-                    "gn desc $OUT $ROOT --format=json --all-toolchains deps" \
-                    2>&1 | head -30
-
-                  echo
-                  echo "=== root target's own sources (sanity check) ==="
-                  ./scripts/run_in_build_env.sh \
-                    "gn desc $OUT $ROOT --format=json --all-toolchains sources" \
-                    2>&1 | head -20
-
-                  # The label //config/telink/chip-gn:telink does not resolve:
-                  #   The input //config/telink/chip-gn:telink matches no
-                  #   targets, configs or files.
-                  # Stop guessing and ask gn what actually exists.
-                  # gn ls without --all-toolchains listed 10322 targets and not
-                  # one of them was under config/telink/chip-gn -- they were all
-                  # host-side (examples, mobly, pw_unit_test). The embedded
-                  # targets live in the custom_toolchain
-                  # (config/telink/chip-gn/toolchain:zephyr), which is also why
-                  # 415 of the compile database entries are tests.
-                  rm -f /tmp/alltgt.txt
-                  ./scripts/run_in_build_env.sh \
-                    "gn ls $OUT --all-toolchains > /tmp/alltgt.txt 2>/dev/null" || true
-                  echo "targets (all toolchains) : $(wc -l < /tmp/alltgt.txt 2>/dev/null || echo 0)"
-                  echo "  ... mentioning telink  : $(grep -ci telink /tmp/alltgt.txt 2>/dev/null || echo 0)"
-                  echo
-                  echo "=== sample telink-related targets ==="
-                  grep -i telink /tmp/alltgt.txt 2>/dev/null | head -15 || echo "(none)"
-
-                  # The compiler filter did not discriminate: 974 of 999
-                  # entries use riscv64-zephyr-elf-g++, including pw_unit_test
-                  # files. compile_commands.json lists what gn *could* build,
-                  # not what ninja actually built -- the test targets exist in
-                  # the graph, so they have compile commands, but ninja never
-                  # runs them.
-                  #
-                  # ninja's own log records the commands it really executed.
-                  # That is the ground truth for "what went into this build".
-                  echo
-                  echo "=== ninja logs anywhere under the build tree ==="
-                  find . -name '.ninja_log' -type f 2>/dev/null | while read -r f; do
-                    printf '   %-70s %s bytes\n' "$f" "$(stat -c%s "$f" 2>/dev/null)"
-                  done
-
-                  echo
-                  echo "=== ninja log analysis ==="
-                  python3 - "$OUT" <<'PY'
-                  import json, os, sys, collections
-
-                  out_dir = sys.argv[1]
-                  log = os.path.join(out_dir, ".ninja_log")
-                  if not os.path.exists(log):
-                      print(f"no .ninja_log at {log}")
-                      raise SystemExit(0)
-
-                  # .ninja_log is TSV: start, end, mtime, output, command-hash
-                  built = set()
-                  with open(log, encoding="utf-8", errors="replace") as f:
-                      for line in f:
-                          if line.startswith("#"):
-                              continue
-                          parts = line.rstrip("\n").split("\t")
-                          if len(parts) >= 4:
-                              built.add(os.path.normpath(os.path.join(out_dir, parts[3])))
-
-                  print(f"commands ninja actually ran : {len(built)}")
-                  objs = [b for b in built if b.endswith(".o") or b.endswith(".obj")]
-                  print(f"  of which object files     : {len(objs)}")
-
-                  # Cross-reference with the compile database to get sources.
-                  db = json.load(open(os.path.join(out_dir, "compile_commands.json")))
-                  src_for_obj = {}
-                  for e in db:
-                      cmd = e.get("command") or " ".join(e.get("arguments", []))
-                      obj = None
-                      toks = cmd.split()
-                      for i, t in enumerate(toks):
-                          if t == "-o" and i + 1 < len(toks):
-                              obj = toks[i + 1]
-                              break
-                      if obj:
-                          src_for_obj[os.path.normpath(os.path.join(out_dir, obj))] = e.get("file")
-
-                  linked_srcs = {src_for_obj[o] for o in objs if o in src_for_obj}
-                  print(f"  sources actually compiled: {len(linked_srcs)}")
-                  print(f"  in db but NOT compiled    : {len(db) - len(linked_srcs)}")
-
-                  if linked_srcs:
-                      common = os.path.commonpath(list(linked_srcs))
-                      rel = [os.path.relpath(s, common) for s in linked_srcs]
-                      print()
-                      print("by source root (actually compiled):")
-                      roots = collections.Counter(
-                          os.sep.join(p.split(os.sep)[:2]) if len(p.split(os.sep)) > 2
-                          else p for p in rel)
-                      for r, n in roots.most_common(15):
-                          print(f"   {n:5d}  {r}")
-                      tests = [p for p in rel if "_test." in p or "/test" in p]
-                      print(f"\ntest-looking files among them: {len(tests)}")
-                      print("samples:")
-                      for p in sorted(rel)[:8]:
-                          print("   ", p)
-                  PY
-
-            - name: Analyse GN closure
-              if: always()
-              run: |
-                  if [ ! -s /tmp/closure.json ]; then
-                    echo "no closure.json -- gn desc unusable, A2 needs --ide=json"
-                    exit 0
-                  fi
-                  python3 - <<'PY'
-                  import json, collections, os
-
-                  try:
-                      tree = json.load(open("/tmp/closure.json"))
-                  except Exception as exc:
-                      print("could not parse closure.json:", exc)
-                      raise SystemExit(0)
-
-                  labels = []
-                  def walk(node):
-                      if isinstance(node, dict):
-                          for k, v in node.items():
-                              labels.append(k)
-                              walk(v)
-                      elif isinstance(node, list):
-                          for v in node:
-                              walk(v)
-                  walk(tree)
-                  uniq = sorted(set(labels))
-                  print(f"targets in closure : {len(uniq)}")
-                  print()
-                  print("by area:")
-                  for k, n in collections.Counter(
-                          l.split("//")[-1].split(":")[0].split("/")[0] for l in uniq
-                      ).most_common(12):
-                      print(f"   {n:5d}  {k}")
-                  print()
-                  print("sample targets:")
-                  for l in uniq[:12]:
-                      print("   ", l)
-                  PY
             - name: Enrich SBOM for NTIA compliance
               run: |
                   python3 scripts/tools/telink/enrich_sbom.py out/sbom
