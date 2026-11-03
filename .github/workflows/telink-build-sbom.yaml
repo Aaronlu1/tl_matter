@@ -100,17 +100,31 @@ jobs:
                     'out/telink-build' \
                     'out/sbom'"
 
+            # zspdx leaves PackageSupplier empty, PackageLicenseDeclared at
+            # NOASSERTION, and emits a purl for 1 package out of 142. Fill those
+            # in so the SBOM satisfies the NTIA minimum elements.
+            - name: Enrich SBOM for NTIA compliance
+              run: |
+                  python3 scripts/tools/telink/enrich_sbom.py out/sbom
+
             - name: Show SBOM summary
               if: always()
               run: |
                   echo "--- SPDX documents ---"
                   ls -la out/sbom 2>/dev/null || echo "(no SBOM directory produced)"
                   echo
-                  echo "--- package counts ---"
-                  for f in out/sbom/*.spdx; do
-                    [ -e "$f" ] || continue
-                    printf '%-24s %s packages\n' "$(basename "$f")" \
-                      "$(grep -c '^PackageName:' "$f" || true)"
+                  for dir in out/sbom out/sbom/enriched; do
+                    [ -d "$dir" ] || continue
+                    echo "--- $dir ---"
+                    printf '%-24s %8s %8s %8s\n' document packages supplier purl
+                    for f in "$dir"/*.spdx; do
+                      [ -e "$f" ] || continue
+                      printf '%-24s %8s %8s %8s\n' "$(basename "$f")" \
+                        "$(grep -c '^PackageName:' "$f" || true)" \
+                        "$(grep -c '^PackageSupplier:' "$f" || true)" \
+                        "$(grep -c '^ExternalRef:.*purl' "$f" || true)"
+                    done
+                    echo
                   done
 
             - name: Upload firmware
@@ -124,10 +138,18 @@ jobs:
                       out/telink-build/zephyr/zephyr.bin
                       out/telink-build/zephyr/zephyr.map
 
-            - name: Upload SBOM
+            - name: Upload SBOM (raw, as emitted by zspdx)
               if: always()
               uses: actions/upload-artifact@v4
               with:
-                  name: telink-sbom-spdx
+                  name: telink-sbom-spdx-raw
                   if-no-files-found: warn
                   path: out/sbom/*.spdx
+
+            - name: Upload SBOM (enriched, NTIA-complete)
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-sbom-spdx-enriched
+                  if-no-files-found: warn
+                  path: out/sbom/enriched/*.spdx
