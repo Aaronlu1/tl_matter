@@ -196,9 +196,93 @@ jobs:
                       print("    (none -- the database may only cover host tooling)")
                   PY
 
-            # zspdx leaves PackageSupplier empty, PackageLicenseDeclared at
-            # NOASSERTION, and emits a purl for 1 package out of 142. Fill those
-            # in so the SBOM satisfies the NTIA minimum elements.
+            # DIAGNOSTIC (read-only, remove once answered).
+            #
+            # The GN compile database is broader than the firmware: it carries
+            # compile commands for every target in the GN build graph, while
+            # ninja only builds the closure of //config/telink/chip-gn:telink.
+            # That is why 415 of its 999 entries are test/fuzz files --
+            # args.gni sets chip_build_tests = false, so those targets exist in
+            # the graph but are not linked in.
+            #
+            # gn desc walks the dependency closure, so it can tell us which
+            # files actually went into the firmware. This step finds out
+            # whether gn desc is usable here and how big the closure is.
+            - name: Probe GN dependency closure
+              if: always()
+              run: |
+                  OUT=out/telink-build/modules/chip-module
+                  ROOT=//config/telink/chip-gn:telink
+
+                  echo "=== gn available? ==="
+                  command -v gn && gn --version || echo "gn NOT on PATH"
+
+                  echo
+                  echo "=== GN out dir contents ==="
+                  ls "$OUT" 2>/dev/null | head -20
+
+                  echo
+                  echo "=== project.json already present? ==="
+                  ls -la "$OUT/project.json" 2>/dev/null \
+                    || echo "absent -- gn gen was not run with --ide=json"
+
+                  echo
+                  echo "=== direct deps of the root target ==="
+                  gn desc "$OUT" "$ROOT" --format=json --all-toolchains deps 2>&1 | head -30
+
+                  echo
+                  echo "=== root target's own sources (sanity check) ==="
+                  gn desc "$OUT" "$ROOT" --format=json --all-toolchains sources 2>&1 | head -20
+
+                  echo
+                  echo "=== closure size via gn desc --tree ==="
+                  if gn desc "$OUT" "$ROOT" --format=json --all-toolchains deps --tree \
+                       > /tmp/closure.json 2>/tmp/closure.err; then
+                    echo "wrote $(stat -c%s /tmp/closure.json) bytes"
+                  else
+                    echo "gn desc --tree FAILED:"
+                    head -10 /tmp/closure.err
+                  fi
+
+            - name: Analyse GN closure
+              if: always()
+              run: |
+                  if [ ! -s /tmp/closure.json ]; then
+                    echo "no closure.json -- gn desc unusable, A2 needs --ide=json"
+                    exit 0
+                  fi
+                  python3 - <<'PY'
+                  import json, collections, os
+
+                  try:
+                      tree = json.load(open("/tmp/closure.json"))
+                  except Exception as exc:
+                      print("could not parse closure.json:", exc)
+                      raise SystemExit(0)
+
+                  labels = []
+                  def walk(node):
+                      if isinstance(node, dict):
+                          for k, v in node.items():
+                              labels.append(k)
+                              walk(v)
+                      elif isinstance(node, list):
+                          for v in node:
+                              walk(v)
+                  walk(tree)
+                  uniq = sorted(set(labels))
+                  print(f"targets in closure : {len(uniq)}")
+                  print()
+                  print("by area:")
+                  for k, n in collections.Counter(
+                          l.split("//")[-1].split(":")[0].split("/")[0] for l in uniq
+                      ).most_common(12):
+                      print(f"   {n:5d}  {k}")
+                  print()
+                  print("sample targets:")
+                  for l in uniq[:12]:
+                      print("   ", l)
+                  PY
             - name: Enrich SBOM for NTIA compliance
               run: |
                   python3 scripts/tools/telink/enrich_sbom.py out/sbom
