@@ -254,9 +254,28 @@ jobs:
                   if [ -s /tmp/closure.json ]; then
                     echo "wrote $(stat -c%s /tmp/closure.json) bytes"
                   else
-                    echo "gn desc --tree produced nothing; stderr:"
-                    head -10 /tmp/closure.err
+                    echo "gn desc --tree produced nothing"
                   fi
+
+                  # Dump the raw captures -- last run showed 500 bytes that
+                  # would not parse, and the pigweed bootstrap banner is a
+                  # candidate for having leaked into the file.
+                  echo
+                  echo "--- raw /tmp/closure.json (first 600 bytes) ---"
+                  head -c 600 /tmp/closure.json 2>/dev/null || echo "(missing)"
+                  echo
+                  echo "--- raw /tmp/closure.err (first 30 lines) ---"
+                  head -30 /tmp/closure.err 2>/dev/null || echo "(missing)"
+
+                  echo
+                  echo "=== gn desc, both streams separated, no --tree ==="
+                  ./scripts/run_in_build_env.sh \
+                    "gn desc $OUT $ROOT --format=json --all-toolchains deps \
+                       > /tmp/deps.json 2>/tmp/deps.err" || true
+                  echo "deps.json: $(stat -c%s /tmp/deps.json 2>/dev/null || echo 0) bytes"
+                  head -c 400 /tmp/deps.json 2>/dev/null || echo "(missing)"
+                  echo
+                  echo "deps.err:"; head -20 /tmp/deps.err 2>/dev/null || echo "(missing)"
 
             - name: Analyse GN closure
               if: always()
