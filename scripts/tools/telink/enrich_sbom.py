@@ -47,9 +47,9 @@ Writes *.spdx into <sbom-dir>/enriched/ unless --in-place is given.
 """
 
 import argparse
+import json
 import os
 import re
-import shutil
 import sys
 
 # git+https://github.com/org/repo[@revision]
@@ -62,37 +62,34 @@ _GITHUB_RE = re.compile(r"github\.com/(?P<org>[^/]+)/(?P<repo>[^/@]+)")
 # zspdx appends the west state to the revision; it is not part of the version.
 _STATE_SUFFIXES = ("-off", "-dirty")
 
-# Licenses of the Zephyr modules, taken from the GitHub license API
-# (GET /repos/{owner}/{repo}/license) rather than guessed from package names.
-#
-# These are needed because zspdx only recognises an explicit
-# `SPDX-License-Identifier:` tag, and several upstream projects instead embed
-# the full license text -- openthread's sources carry the complete 28-line
-# BSD-3-Clause body and no tag at all, so all 247 of its files come back NONE.
-# Raising zspdx's numLinesScanned does not help; the tag is absent entirely.
-#
-# Keyed by repository, so the lookup is grounded in where the code came from.
-# Deliberately absent -- the API could not identify a license file for these,
-# so they need a human decision rather than a guess:
-#   fatfs, tinycrypt, percepio, segger, hal_telink, picolibc, xz
-MODULE_LICENSES = {
-    "zephyrproject-rtos/openthread": "BSD-3-Clause",
-    "zephyrproject-rtos/mcuboot": "Apache-2.0",
-    "zephyrproject-rtos/littlefs": "BSD-3-Clause",
-    "zephyrproject-rtos/lvgl": "MIT",
-    "zephyrproject-rtos/zcbor": "Apache-2.0",
-    "zephyrproject-rtos/liblc3": "Apache-2.0",
-    "zephyrproject-rtos/mipi-sys-t": "BSD-3-Clause",
-    "zephyrproject-rtos/tflite-micro": "Apache-2.0",
-}
+# Licenses confirmed by the team live in module_licenses.json next to this
+# script, so they can be edited without touching code. See that file for why
+# the map is needed at all (short version: zspdx only reads an explicit
+# SPDX-License-Identifier tag, and several upstream projects embed the full
+# license text instead, so their files all come back NONE).
+DEFAULT_LICENSE_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "module_licenses.json")
 
 
-def license_from_repo(download_location):
+def load_license_map(path):
+    """Return {org/repo: SPDX-id} from the team-maintained JSON file."""
+    if not path or not os.path.exists(path):
+        print(f"WARNING: license map {path!r} not found; "
+              f"no fallback licenses will be applied", file=sys.stderr)
+        return {}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    licenses = data.get("licenses", {})
+    # Guard against a reviewer pasting an empty value.
+    return {k: v for k, v in licenses.items() if isinstance(v, str) and v.strip()}
+
+
+def license_from_repo(download_location, license_map):
     """Look up a module's license by the repository it was fetched from."""
     org, repo = repo_from_location(download_location)
     if not org:
         return None
-    return MODULE_LICENSES.get(f"{org}/{repo}")
+    return license_map.get(f"{org}/{repo}")
 
 
 def split_blocks(text):
@@ -157,7 +154,7 @@ def field(lines, key):
     return None
 
 
-def package_license_declared(lines, download_location):
+def package_license_declared(lines, download_location, license_map):
     """Derive a declared license, or None to leave it alone."""
     concluded = field(lines, "PackageLicenseConcluded")
     if concluded and concluded != "NOASSERTION":
@@ -176,11 +173,11 @@ def package_license_declared(lines, download_location):
         return " AND ".join(sorted(seen))
 
     # Files carry no SPDX tag (full-text license headers). Fall back to the
-    # upstream repository's license, if we have a verified entry for it.
-    return license_from_repo(download_location)
+    # team-confirmed license for this repository, if there is one.
+    return license_from_repo(download_location, license_map)
 
 
-def enrich_block(lines, default_supplier):
+def enrich_block(lines, default_supplier, license_map):
     """Return new lines for one Package block with the missing fields filled."""
     name = field(lines, "PackageName") or "<unnamed>"
     version = field(lines, "PackageVersion") or ""
@@ -195,7 +192,7 @@ def enrich_block(lines, default_supplier):
 
     # --- PackageLicenseDeclared -----------------------------------------
     if field(lines, "PackageLicenseDeclared") == "NOASSERTION":
-        declared = package_license_declared(lines, dl)
+        declared = package_license_declared(lines, dl, license_map)
         if declared:
             additions["PackageLicenseDeclared"] = declared
 
@@ -241,12 +238,12 @@ def enrich_block(lines, default_supplier):
     return out, sorted(additions)
 
 
-def process_document(text, default_supplier):
+def process_document(text, default_supplier, license_map):
     header, blocks = split_blocks(text)
     out = [header]
     stats = {"packages": 0, "supplier": 0, "license": 0, "purl": 0}
     for name, lines in blocks:
-        new_lines, added = enrich_block(lines, default_supplier)
+        new_lines, added = enrich_block(lines, default_supplier, license_map)
         out.append(f"##### Package: {name}\n")
         out.extend(new_lines)
         stats["packages"] += 1
@@ -269,7 +266,14 @@ def main():
                          "(default: %(default)s)")
     ap.add_argument("--in-place", action="store_true",
                     help="overwrite the input files instead of writing to enriched/")
+    ap.add_argument("--license-map", default=DEFAULT_LICENSE_MAP,
+                    help="team-maintained JSON of confirmed component licenses "
+                         "(default: %(default)s)")
     args = ap.parse_args()
+
+    license_map = load_license_map(args.license_map)
+    print(f"license map: {len(license_map)} confirmed entr"
+          f"{'y' if len(license_map) == 1 else 'ies'} from {args.license_map}")
 
     src = args.sbom_dir
     docs = sorted(f for f in os.listdir(src) if f.endswith(".spdx"))
@@ -286,7 +290,7 @@ def main():
     for doc in docs:
         with open(os.path.join(src, doc), encoding="utf-8") as f:
             text = f.read()
-        new_text, stats = process_document(text, args.default_supplier)
+        new_text, stats = process_document(text, args.default_supplier, license_map)
         with open(os.path.join(dst, doc), "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
         print(f"{doc:22} {stats['packages']:4d} pkg | "

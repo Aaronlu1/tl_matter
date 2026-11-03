@@ -125,6 +125,14 @@ jobs:
                   python3 scripts/tools/telink/spdx_to_cyclonedx.py \
                     out/sbom/enriched -o out/sbom/telink-matter.cdx.json
 
+            # Surfaces the components that need a human decision. In this build
+            # that is ~12 of 21 real components; the other 121 packages are
+            # CMake build targets and are counted but not listed.
+            - name: Generate SBOM review artefacts
+              run: |
+                  python3 scripts/tools/telink/sbom_review.py \
+                    out/sbom/enriched --out-dir out/sbom/review
+
             - name: Show SBOM summary
               if: always()
               run: |
@@ -179,3 +187,13 @@ jobs:
                   name: telink-sbom-cyclonedx
                   if-no-files-found: warn
                   path: out/sbom/*.cdx.json
+
+            - name: Upload SBOM review artefacts
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-sbom-review
+                  if-no-files-found: warn
+                  path: |
+                      out/sbom/review/sbom-review.csv
+                      out/sbom/review/sbom-gaps.md
