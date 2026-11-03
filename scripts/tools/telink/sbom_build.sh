@@ -68,20 +68,27 @@ west spdx --init --build-dir="$BUILD_DIR"
 
 # Step 2: build.
 #
-# CONFIG_BUILD_OUTPUT_META=y is what makes the build emit zephyr_meta.yml.
-# Without it Zephyr's top-level CMakeLists.txt actively deletes the file
-# ("Prevent spdx to use invalid data"), and `west spdx` then bails with
+# CONFIG_BUILD_OUTPUT_META=y is what makes the build emit the meta file that
+# zspdx requires. Without it Zephyr's top-level CMakeLists.txt actively deletes
+# it ("Prevent spdx to use invalid data"), and `west spdx` then bails with
 # "cannot find a valid zephyr_meta.yml required for SPDX generation".
 # This mirrors Zephyr's own SBOM test, which sets exactly this one option:
 #   tests/application_development/software_bill_of_materials/prj.conf
 echo "=== [2/3] west build -b $BOARD"
 west build -d "$BUILD_DIR" -b "$BOARD" "$APP_DIR" -- -DCONFIG_BUILD_OUTPUT_META=y
 
-if [[ ! -s "$BUILD_DIR/zephyr/zephyr_meta.yml" ]]; then
-    echo "ERROR: $BUILD_DIR/zephyr/zephyr_meta.yml was not produced." >&2
+# The file is NOT called zephyr_meta.yml -- that is only the wording of zspdx's
+# error message. Zephyr computes KERNEL_META_NAME=${KERNEL_NAME}.meta in
+# cmake/modules/kernel.cmake, so the real artifact is <build_dir>/zephyr.meta.
+# Read the path back out of the CMake cache, which is exactly what zspdx does,
+# instead of hardcoding a guess.
+META_PATH="$(sed -n 's/^KERNEL_META_PATH:[^=]*=//p' "$BUILD_DIR/CMakeCache.txt" | head -1)"
+if [[ -z "$META_PATH" || ! -s "$META_PATH" ]]; then
+    echo "ERROR: KERNEL_META_PATH is unset or its file is missing (got: '${META_PATH:-<unset>}')." >&2
     echo "       CONFIG_BUILD_OUTPUT_META=y did not take effect." >&2
     exit 1
 fi
+echo "=== meta file: $META_PATH"
 
 # Step 3: generate the SBOM from the compile graph.
 echo "=== [3/3] west spdx"
