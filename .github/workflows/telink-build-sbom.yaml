@@ -1,0 +1,133 @@
+# Copyright (c) 2026 Project CHIP Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Lean Telink build + SBOM pipeline.
+#
+# This is deliberately NOT a copy of .github/workflows/examples-telink.yaml:
+# upstream builds 23 example targets, which is far more than needed to prove the
+# toolchain works and to produce an SBOM. Start with one target, widen later.
+#
+# Note: the upstream examples-telink.yaml only triggers on master / v*-branch,
+# so it never runs on dev-tlk_v1.5. This workflow exists to fill that gap.
+
+name: Telink Build + SBOM
+
+on:
+    workflow_dispatch:
+        inputs:
+            board:
+                description: "Zephyr board target"
+                required: true
+                default: tl3238x
+            app:
+                description: "Example source dir (relative to repo root)"
+                required: true
+                default: examples/lighting-app/telink
+    push:
+        branches:
+            - dev-tlk_v1.5
+            - 'ci/**'
+        paths:
+            - .github/workflows/telink-build-sbom.yaml
+            - scripts/tools/telink/sbom_build.sh
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CHIP_NO_LOG_TIMESTAMPS: true
+
+    # Matched pair from the tl_v1.5.0 release notes
+    # (docs/platforms/telink/releases/telink_release_notes.md).
+    # Upstream CI pins a slightly different tl_zephyr revision ("for developers
+    # purpose"); this pins the released/validated pair instead so the SBOM has a
+    # reproducible baseline.
+    TELINK_ZEPHYR_URL: https://github.com/telink-semi/tl_zephyr.git
+    TELINK_ZEPHYR_REV: 3b7996ad7645869aa2b1e6f2f16d56d03b8035a5
+    TELINK_BLE_SDK_URL: https://github.com/telink-semi/tl_ble_sdk_zephyr.git
+    TELINK_BLE_SDK_REV: eb0d12063db5606db8bca5526ce9b54c77c45797
+
+jobs:
+    build-sbom:
+        name: Build + SBOM (${{ github.event.inputs.board || 'tl3238x' }})
+        runs-on: ubuntu-latest
+
+        container:
+            # Ships the riscv64-zephyr-elf toolchain (Zephyr SDK 0.17.0), a
+            # pre-cloned tl_zephyr plus all west modules and hal_telink blobs,
+            # and exports TELINK_ZEPHYR_BASE / TELINK_ZEPHYR_SDK_DIR.
+            # TODO: pin by digest instead of the mutable :185 tag.
+            image: ghcr.io/project-chip/chip-build-telink:185
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            # Composite action; also prunes ~3GB off the runner (dotnet /
+            # android SDK) which matters because the Matter tree plus a Zephyr
+            # build is close to the default runner disk budget.
+            # Its bootstrap cache backend is buildjet, which a fork may not have
+            # credentials for -- both cache steps are continue-on-error, so the
+            # worst case is a cold bootstrap.
+            - name: Checkout submodules & Bootstrap
+              uses: ./.github/actions/checkout-submodules-and-bootstrap
+              with:
+                  platform: telink
+
+            - name: Pin Telink Zephyr SDK and fetch Telink BLE SDK
+              run: |
+                  scripts/run_in_build_env.sh "python3 scripts/tools/telink/update_zephyr.py \
+                    $TELINK_ZEPHYR_URL $TELINK_ZEPHYR_REV \
+                    --sdk-repo $TELINK_BLE_SDK_URL --sdk-hash $TELINK_BLE_SDK_REV"
+
+            - name: Build example and generate SPDX SBOM
+              run: |
+                  ./scripts/run_in_build_env.sh "bash scripts/tools/telink/sbom_build.sh \
+                    '${{ github.event.inputs.board || 'tl3238x' }}' \
+                    '${{ github.event.inputs.app || 'examples/lighting-app/telink' }}' \
+                    'out/telink-build' \
+                    'out/sbom'"
+
+            - name: Show SBOM summary
+              if: always()
+              run: |
+                  echo "--- SPDX documents ---"
+                  ls -la out/sbom 2>/dev/null || echo "(no SBOM directory produced)"
+                  echo
+                  echo "--- package counts ---"
+                  for f in out/sbom/*.spdx; do
+                    [ -e "$f" ] || continue
+                    printf '%-24s %s packages\n' "$(basename "$f")" \
+                      "$(grep -c '^PackageName:' "$f" || true)"
+                  done
+
+            - name: Upload firmware
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-firmware
+                  if-no-files-found: warn
+                  path: |
+                      out/telink-build/zephyr/zephyr.elf
+                      out/telink-build/zephyr/zephyr.bin
+                      out/telink-build/zephyr/zephyr.map
+
+            - name: Upload SBOM
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-sbom-spdx
+                  if-no-files-found: warn
+                  path: out/sbom/*.spdx
