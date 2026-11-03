@@ -110,6 +110,66 @@ jobs:
                     'out/telink-build' \
                     'out/sbom'"
 
+            # DIAGNOSTIC (read-only, remove once answered).
+            #
+            # zspdx walks the CMake codemodel, so everything the Matter stack
+            # builds via GN is invisible to it: the entire protocol stack shows
+            # up as one opaque package with a commit SHA and FilesAnalyzed:
+            # false. The GN invocation in config/common/cmake/chip_gn.cmake
+            # already passes --add-export-compile-commands=*, so a compile
+            # database should exist somewhere under the build tree. This step
+            # finds out where, and what it contains.
+            - name: Locate GN compile database
+              if: always()
+              run: |
+                  echo "=== compile_commands.json anywhere under the build tree ==="
+                  find . -name 'compile_commands.json' -type f 2>/dev/null | while read -r f; do
+                    printf '   %-70s %s bytes\n' "$f" "$(stat -c%s "$f" 2>/dev/null)"
+                  done
+                  echo
+                  echo "=== chip-gn external project directory ==="
+                  find out -maxdepth 7 -type d -name 'chip-gn*' 2>/dev/null | head -10
+                  echo
+                  echo "=== .ninja files under the Matter build dir (shows it ran) ==="
+                  find out -maxdepth 7 -name 'build.ninja' 2>/dev/null | head -10
+
+            - name: Inspect GN compile database
+              if: always()
+              run: |
+                  db="$(find . -name 'compile_commands.json' -type f 2>/dev/null | head -1)"
+                  if [ -z "$db" ]; then
+                    echo "NOT FOUND -- option A is not viable without a code change"
+                    exit 0
+                  fi
+                  echo "using: $db"
+                  python3 - "$db" <<'PY'
+                  import json, sys, collections, os
+                  entries = json.load(open(sys.argv[1]))
+                  files = [e.get("file", "") for e in entries]
+                  print(f"entries           : {len(entries)}")
+                  print("distinct dirs     :",
+                        len({os.path.dirname(f) for f in files}))
+
+                  # Strip the common path prefix so the breakdown shows
+                  # src/app, src/protocols, ... rather than collapsing
+                  # everything under one absolute prefix.
+                  common = os.path.commonpath([os.path.dirname(f) for f in files]) if files else ""
+                  print(f"common prefix     : {common}")
+                  print()
+                  print("compiled files by source root:")
+                  roots = collections.Counter()
+                  for f in files:
+                      rel = os.path.relpath(f, common) if common else f
+                      parts = rel.split(os.sep)
+                      roots[os.sep.join(parts[:2]) if len(parts) > 2 else parts[0]] += 1
+                  for k, n in roots.most_common(15):
+                      print(f"   {n:5d}  {k}")
+                  print()
+                  print("sample entries:")
+                  for f in files[:3]:
+                      print("   ", f)
+                  PY
+
             # zspdx leaves PackageSupplier empty, PackageLicenseDeclared at
             # NOASSERTION, and emits a purl for 1 package out of 142. Fill those
             # in so the SBOM satisfies the NTIA minimum elements.
