@@ -26,25 +26,61 @@ Each run uploads five artifacts:
 | Artifact | Contents | Consumer |
 | --- | --- | --- |
 | `telink-firmware` | `zephyr.elf`, `.bin`, `.map` | Flashing, size analysis |
-| `telink-sbom-spdx-raw` | Four SPDX documents exactly as `west spdx` emits them | Debugging the pipeline |
+| `telink-sbom-spdx-raw` | The SPDX documents exactly as emitted | Debugging the pipeline |
 | `telink-sbom-spdx-enriched` | The same documents with NTIA fields filled in | **Primary deliverable** |
 | `telink-sbom-cyclonedx` | CycloneDX 1.6 JSON | SCA platforms that do not read SPDX |
 | `telink-sbom-review` | `sbom-review.csv`, `sbom-gaps.md` | Human review |
 
 Ship the **enriched** set, not the raw one. The raw documents leave
 `PackageSupplier` empty, set every `PackageLicenseDeclared` to `NOASSERTION`,
-and carry a purl for one package out of 142.
+and carry a purl for one package out of 143.
 
 ## What the SBOM guarantees
 
 Measured on a `tl3238x` lighting-app build:
 
-- **142 packages**, of which **21 are real components** carrying a purl. The
+- **143 packages and 927 file entries** with SHA-256, across five documents:
+
+  | Document | Packages | Files | Covers |
+  | --- | ---: | ---: | --- |
+  | `zephyr.spdx` | 21 | 561 | Zephyr and its modules |
+  | `matter-sources.spdx` | 1 | 288 | The Matter stack (see below) |
+  | `build.spdx` | 100 | 76 | CMake build targets |
+  | `modules-deps.spdx` | 20 | 0 | Module dependency references |
+  | `app.spdx` | 1 | 2 | The example application |
+
+- Of the 143 packages, **22 are real components** carrying a purl. The
   remaining 121 are CMake build targets (`drivers--gpio`, `kernel`,
   `zephyr-pre0`, ...) — artifacts of the build itself with no upstream project
   and no independent license.
-- **1136 dependency relationships**, and 639 file entries with SHA-256.
 - All seven **NTIA minimum elements** present after enrichment.
+
+### The Matter stack is tracked via ninja, not zspdx
+
+zspdx walks the CMake codemodel, but the Matter chip library is built by GN
+through `ExternalProject_Add` (`config/common/cmake/chip_gn.cmake`), so GN's
+targets are invisible to it. Without extra work the entire protocol stack
+appears as a single opaque package with a commit SHA and `FilesAnalyzed:
+false`.
+
+`gn_sources_to_spdx.py` closes that gap and emits `matter-sources.spdx` with
+the 288 sources that actually went into the firmware — `src/app` (93),
+`src/lib` (50), `src/platform` (32), `src/protocols` (28), `src/credentials`
+(18), `src/transport` (13) and the rest.
+
+The discriminator is **`.ninja_log`**, not `compile_commands.json`. The
+database lists what gn *could* build and includes test targets that
+`chip_build_tests = false` keeps out of the firmware — 711 of its 999 entries
+are never built. Intersecting ninja's actual outputs with the database's `-o`
+paths is what yields the real set. Two approaches that look reasonable and do
+not work:
+
+- `gn desc` on the root target. Failed repeatedly: the target label
+  `//config/telink/chip-gn:telink` does not resolve, and gn needs the pigweed
+  environment active.
+- Filtering the database by compiler. 974 of 999 entries use
+  `riscv64-zephyr-elf-g++`, `pw_unit_test` files included, so it
+  discriminates nothing.
 
 ### Source hashes are reproducible; binary hashes are not
 
@@ -69,24 +105,37 @@ plus `-ffile-prefix-map`), which is not currently enabled.
 
 ## Known limitations
 
-### License detection is tag-only
+### License detection: zspdx reads tags only
 
 zspdx recognizes only an explicit `SPDX-License-Identifier:` tag. Projects
 that embed the full license text instead are reported as `NONE`, no matter how
 many lines are scanned — the tag is simply absent.
 
-openthread is the clearest example: its sources carry the complete 28-line
-BSD-3-Clause body and no tag, so all 247 of its files come back `NONE` and the
-package would be `NOASSERTION` without the manual map described below.
+This is not a fringe case. **Both** major inputs to this build do it:
 
-Across the build, **286 file entries have no detected license**. 31 of those
-are in `telink_ble_sdk`, which is proprietary vendor code and carries no SPDX
-headers by design.
+- **openthread** carries the complete 28-line BSD-3-Clause body and no tag, so
+  all 247 of its files come back `NONE`. The manual map below covers it.
+- **The Matter stack** carries the full Apache-2.0 boilerplate and no tag. A
+  sample of 300 files found zero SPDX tags. `gn_sources_to_spdx.py`
+  recognises the Apache-2.0 grant sentence directly, which resolves 286 of the
+  288 sources it emits.
+
+  That second pass is deliberately narrow: it matches the Apache-2.0 grant
+  sentence, not "any licence-looking text", so it cannot mislabel a file under
+  a different licence.
+
+Across the build, **286 file entries still have no detected license**. 31 of
+those are in `telink_ble_sdk`, which is proprietary vendor code and carries no
+SPDX headers by design.
+
+> Anything added here that reads licences should check for full-text headers
+> first. Assuming SPDX tags are present is the mistake this section exists to
+> prevent — it was made twice while building this pipeline.
 
 ### Package-level licenses are mostly asserted, not derived
 
 zspdx leaves `PackageLicenseDeclared` at `NOASSERTION` for every package. The
-enrichment step derives a value where it can, but 132 of 142 packages still
+enrichment step derives a value where it can, but 132 of 143 packages still
 have no declared license because there is no evidence to derive one from —
 they are the CMake build targets, which have no independent license to
 declare. This is expected, not a defect.
