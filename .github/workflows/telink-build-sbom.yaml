@@ -245,37 +245,31 @@ jobs:
                     "gn desc $OUT $ROOT --format=json --all-toolchains sources" \
                     2>&1 | head -20
 
-                  echo
-                  echo "=== closure via gn desc --tree ==="
-                  rm -f /tmp/closure.json /tmp/closure.err
-                  ./scripts/run_in_build_env.sh \
-                    "gn desc $OUT $ROOT --format=json --all-toolchains deps --tree \
-                       > /tmp/closure.json 2>/tmp/closure.err" || true
-                  if [ -s /tmp/closure.json ]; then
-                    echo "wrote $(stat -c%s /tmp/closure.json) bytes"
-                  else
-                    echo "gn desc --tree produced nothing"
-                  fi
+                  # The label //config/telink/chip-gn:telink does not resolve:
+                  #   The input //config/telink/chip-gn:telink matches no
+                  #   targets, configs or files.
+                  # Stop guessing and ask gn what actually exists.
+                  # Redirect inside the quoted command again, then post-process
+                  # locally -- pattern syntax for gn ls is not worth guessing
+                  # at after three rounds of guessing.
+                  rm -f /tmp/alltgt.txt
+                  ./scripts/run_in_build_env.sh "gn ls $OUT > /tmp/alltgt.txt 2>/dev/null" || true
 
-                  # Dump the raw captures -- last run showed 500 bytes that
-                  # would not parse, and the pigweed bootstrap banner is a
-                  # candidate for having leaked into the file.
+                  echo "total target lines : $(wc -l < /tmp/alltgt.txt 2>/dev/null || echo 0)"
                   echo
-                  echo "--- raw /tmp/closure.json (first 600 bytes) ---"
-                  head -c 600 /tmp/closure.json 2>/dev/null || echo "(missing)"
+                  echo "=== targets under config/telink/chip-gn ==="
+                  grep -E "^//config/telink/chip-gn" /tmp/alltgt.txt 2>/dev/null | head -20 \
+                    || echo "(none)"
                   echo
-                  echo "--- raw /tmp/closure.err (first 30 lines) ---"
-                  head -30 /tmp/closure.err 2>/dev/null || echo "(missing)"
-
+                  echo "=== targets whose path mentions telink (first 30) ==="
+                  grep -i "telink" /tmp/alltgt.txt 2>/dev/null | head -30 || echo "(none)"
                   echo
-                  echo "=== gn desc, both streams separated, no --tree ==="
-                  ./scripts/run_in_build_env.sh \
-                    "gn desc $OUT $ROOT --format=json --all-toolchains deps \
-                       > /tmp/deps.json 2>/tmp/deps.err" || true
-                  echo "deps.json: $(stat -c%s /tmp/deps.json 2>/dev/null || echo 0) bytes"
-                  head -c 400 /tmp/deps.json 2>/dev/null || echo "(missing)"
+                  echo "=== distinct top-level dirs in the target list ==="
+                  grep "^//" /tmp/alltgt.txt 2>/dev/null | sed 's|^//||; s|:.*||' \
+                    | cut -d/ -f1-2 | sort -u | head -25
                   echo
-                  echo "deps.err:"; head -20 /tmp/deps.err 2>/dev/null || echo "(missing)"
+                  echo "=== first 15 raw target lines (shows label format) ==="
+                  head -15 /tmp/alltgt.txt 2>/dev/null
 
             - name: Analyse GN closure
               if: always()
