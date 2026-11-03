@@ -191,6 +191,10 @@ def main():
     ap.add_argument("--name", default="matter-chip-sources",
                     help="PackageName for the emitted package")
     ap.add_argument("--purl", default=None, help="purl for the package")
+    ap.add_argument("--download-location", default=None,
+                    help="VCS URL, e.g. git+https://github.com/org/repo@sha. "
+                         "Kept separate from --purl because the enrichment step "
+                         "reads the supplier out of this field.")
     ap.add_argument("--version", default=None, help="PackageVersion")
     ap.add_argument("--namespace", default=None,
                     help="DocumentNamespace (default: derived from --purl)")
@@ -249,7 +253,13 @@ def main():
         lines.append(f"PackageVersion: {args.version}")
     if args.purl:
         lines.append(f"ExternalRef: PACKAGE_MANAGER purl {args.purl}")
-    lines.append("PackageDownloadLocation: " + (args.purl or "NOASSERTION"))
+    # A VCS URL, not the purl: enrich_sbom.py derives PackageSupplier by
+    # matching github.com/<org>/<repo> in this field, so a purl string here
+    # silently falls back to the default supplier.
+    if args.download_location:
+        lines.append(f"PackageDownloadLocation: {args.download_location}")
+    else:
+        lines.append("PackageDownloadLocation: NOASSERTION")
     lines.append("FilesAnalyzed: true")
     lines.append(f"PackageVerificationCode: {verification}")
     lines.append("PackageLicenseConcluded: NOASSERTION")

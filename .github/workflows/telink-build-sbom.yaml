@@ -148,6 +148,7 @@ jobs:
                     --repo-root "$PWD" \
                     --out out/sbom/matter-sources.spdx \
                     --purl "pkg:github/${GITHUB_REPOSITORY}@$REV" \
+                    --download-location "git+https://github.com/${GITHUB_REPOSITORY}@$REV" \
                     --version "$REV"
 
             - name: Enrich SBOM for NTIA compliance
