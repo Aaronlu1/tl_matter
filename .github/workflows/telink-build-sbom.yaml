@@ -226,21 +226,35 @@ jobs:
                   ls -la "$OUT/project.json" 2>/dev/null \
                     || echo "absent -- gn gen was not run with --ide=json"
 
+                  # gn must run inside the Matter build environment: BUILD.gn
+                  # imports pigweed's pigweed_environment.gni, which resolves
+                  # $_PW_ACTUAL_ENVIRONMENT_ROOT. Outside that environment the
+                  # variable is empty and gn fails with
+                  #   Unable to load "/build_overrides/pigweed_environment.gni"
+                  # Redirects go inside the quoted command because
+                  # run_in_build_env.sh prints its own banner to stdout.
                   echo
                   echo "=== direct deps of the root target ==="
-                  gn desc "$OUT" "$ROOT" --format=json --all-toolchains deps 2>&1 | head -30
+                  ./scripts/run_in_build_env.sh \
+                    "gn desc $OUT $ROOT --format=json --all-toolchains deps" \
+                    2>&1 | head -30
 
                   echo
                   echo "=== root target's own sources (sanity check) ==="
-                  gn desc "$OUT" "$ROOT" --format=json --all-toolchains sources 2>&1 | head -20
+                  ./scripts/run_in_build_env.sh \
+                    "gn desc $OUT $ROOT --format=json --all-toolchains sources" \
+                    2>&1 | head -20
 
                   echo
-                  echo "=== closure size via gn desc --tree ==="
-                  if gn desc "$OUT" "$ROOT" --format=json --all-toolchains deps --tree \
-                       > /tmp/closure.json 2>/tmp/closure.err; then
+                  echo "=== closure via gn desc --tree ==="
+                  rm -f /tmp/closure.json /tmp/closure.err
+                  ./scripts/run_in_build_env.sh \
+                    "gn desc $OUT $ROOT --format=json --all-toolchains deps --tree \
+                       > /tmp/closure.json 2>/tmp/closure.err" || true
+                  if [ -s /tmp/closure.json ]; then
                     echo "wrote $(stat -c%s /tmp/closure.json) bytes"
                   else
-                    echo "gn desc --tree FAILED:"
+                    echo "gn desc --tree produced nothing; stderr:"
                     head -10 /tmp/closure.err
                   fi
 
