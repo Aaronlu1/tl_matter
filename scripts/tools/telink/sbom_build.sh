@@ -67,8 +67,21 @@ echo "=== [1/3] west spdx --init"
 west spdx --init --build-dir="$BUILD_DIR"
 
 # Step 2: build.
+#
+# CONFIG_BUILD_OUTPUT_META=y is what makes the build emit zephyr_meta.yml.
+# Without it Zephyr's top-level CMakeLists.txt actively deletes the file
+# ("Prevent spdx to use invalid data"), and `west spdx` then bails with
+# "cannot find a valid zephyr_meta.yml required for SPDX generation".
+# This mirrors Zephyr's own SBOM test, which sets exactly this one option:
+#   tests/application_development/software_bill_of_materials/prj.conf
 echo "=== [2/3] west build -b $BOARD"
-west build -d "$BUILD_DIR" -b "$BOARD" "$APP_DIR"
+west build -d "$BUILD_DIR" -b "$BOARD" "$APP_DIR" -- -DCONFIG_BUILD_OUTPUT_META=y
+
+if [[ ! -s "$BUILD_DIR/zephyr/zephyr_meta.yml" ]]; then
+    echo "ERROR: $BUILD_DIR/zephyr/zephyr_meta.yml was not produced." >&2
+    echo "       CONFIG_BUILD_OUTPUT_META=y did not take effect." >&2
+    exit 1
+fi
 
 # Step 3: generate the SBOM from the compile graph.
 echo "=== [3/3] west spdx"
