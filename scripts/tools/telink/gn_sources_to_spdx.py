@@ -77,8 +77,14 @@ def parse_ninja_log(path, out_dir):
     return built
 
 
-def parse_compile_db(path):
-    """Return {normalised object path: source path} from a compile database."""
+def parse_compile_db(path, out_dir):
+    """Return {normalised object path: source path} from a compile database.
+
+    The -o value is relative to the build directory, so it has to be joined
+    with out_dir before it can be compared against ninja's log entries (which
+    are also relative to the build directory). Skipping that join makes the
+    intersection silently empty.
+    """
     import json
     with open(path, encoding="utf-8") as f:
         entries = json.load(f)
@@ -93,7 +99,7 @@ def parse_compile_db(path):
                 obj = toks[i + 1]
                 break
         if obj and e.get("file"):
-            src_for_obj[os.path.normpath(obj)] = e["file"]
+            src_for_obj[os.path.normpath(os.path.join(out_dir, obj))] = e["file"]
     return src_for_obj
 
 
@@ -133,7 +139,7 @@ def license_of(path):
 def select_sources(ninja_log, compile_db, gn_out_dir):
     """Return the sorted list of sources that were compiled and still exist."""
     built = parse_ninja_log(ninja_log, gn_out_dir)
-    src_for_obj = parse_compile_db(compile_db)
+    src_for_obj = parse_compile_db(compile_db, gn_out_dir)
 
     objs = [b for b in built if b.endswith((".o", ".obj"))]
     sources = {src_for_obj[o] for o in objs if o in src_for_obj}
