@@ -264,47 +264,79 @@ jobs:
                   echo "=== sample telink-related targets ==="
                   grep -i telink /tmp/alltgt.txt 2>/dev/null | head -15 || echo "(none)"
 
-                  # The compile database carries the full command for each
-                  # entry, so the compiler binary alone tells us whether a file
-                  # was cross-compiled for the target or built for the host.
-                  # That is a far simpler discriminator than the dependency
-                  # closure, and it can be tested locally.
+                  # The compiler filter did not discriminate: 974 of 999
+                  # entries use riscv64-zephyr-elf-g++, including pw_unit_test
+                  # files. compile_commands.json lists what gn *could* build,
+                  # not what ninja actually built -- the test targets exist in
+                  # the graph, so they have compile commands, but ninja never
+                  # runs them.
+                  #
+                  # ninja's own log records the commands it really executed.
+                  # That is the ground truth for "what went into this build".
                   echo
-                  echo "=== compile database entries by compiler ==="
-                  python3 - "$OUT/compile_commands.json" <<'PY'
-                  import json, sys, collections, os, re
-                  entries = json.load(open(sys.argv[1]))
-                  compilers = collections.Counter()
-                  by_cc = collections.defaultdict(list)
-                  for e in entries:
+                  echo "=== ninja logs anywhere under the build tree ==="
+                  find . -name '.ninja_log' -type f 2>/dev/null | while read -r f; do
+                    printf '   %-70s %s bytes\n' "$f" "$(stat -c%s "$f" 2>/dev/null)"
+                  done
+
+                  echo
+                  echo "=== ninja log analysis ==="
+                  python3 - "$OUT" <<'PY'
+                  import json, os, sys, collections
+
+                  out_dir = sys.argv[1]
+                  log = os.path.join(out_dir, ".ninja_log")
+                  if not os.path.exists(log):
+                      print(f"no .ninja_log at {log}")
+                      raise SystemExit(0)
+
+                  # .ninja_log is TSV: start, end, mtime, output, command-hash
+                  built = set()
+                  with open(log, encoding="utf-8", errors="replace") as f:
+                      for line in f:
+                          if line.startswith("#"):
+                              continue
+                          parts = line.rstrip("\n").split("\t")
+                          if len(parts) >= 4:
+                              built.add(os.path.normpath(os.path.join(out_dir, parts[3])))
+
+                  print(f"commands ninja actually ran : {len(built)}")
+                  objs = [b for b in built if b.endswith(".o") or b.endswith(".obj")]
+                  print(f"  of which object files     : {len(objs)}")
+
+                  # Cross-reference with the compile database to get sources.
+                  db = json.load(open(os.path.join(out_dir, "compile_commands.json")))
+                  src_for_obj = {}
+                  for e in db:
                       cmd = e.get("command") or " ".join(e.get("arguments", []))
-                      m = re.search(r"(?:^|\s)([^\s]*g\+\+|gcc|clang\+\+|clang|cc)(?:\s|$)", cmd)
-                      name = os.path.basename(m.group(1)) if m else "<unknown>"
-                      compilers[name] += 1
-                      by_cc[name].append(e.get("file", ""))
-                  for k, n in compilers.most_common(10):
-                      print(f"   {n:5d}  {k}")
-                  print()
-                  for k in compilers:
-                      if "riscv" in k or "zephyr" in k:
-                          files = by_cc[k]
-                          print(f"cross-compiled with {k}: {len(files)} files")
-                          # Strip the common prefix so the breakdown reads
-                          # src/app, src/protocols, ... instead of collapsing.
-                          common = os.path.commonpath(files) if files else ""
-                          rel = [os.path.relpath(f, common) for f in files] if common else files
-                          roots = collections.Counter(
-                              os.sep.join(p.split(os.sep)[:2]) if len(p.split(os.sep)) > 2
-                              else p for p in rel)
-                          print("   by source root:")
-                          for r, n in roots.most_common(12):
-                              print(f"      {n:5d}  {r}")
-                          print("   samples:")
-                          for f in files[:5]:
-                              print("      ", f)
-                          break
-                  else:
-                      print("no riscv/zephyr compiler found in any command")
+                      obj = None
+                      toks = cmd.split()
+                      for i, t in enumerate(toks):
+                          if t == "-o" and i + 1 < len(toks):
+                              obj = toks[i + 1]
+                              break
+                      if obj:
+                          src_for_obj[os.path.normpath(os.path.join(out_dir, obj))] = e.get("file")
+
+                  linked_srcs = {src_for_obj[o] for o in objs if o in src_for_obj}
+                  print(f"  sources actually compiled: {len(linked_srcs)}")
+                  print(f"  in db but NOT compiled    : {len(db) - len(linked_srcs)}")
+
+                  if linked_srcs:
+                      common = os.path.commonpath(list(linked_srcs))
+                      rel = [os.path.relpath(s, common) for s in linked_srcs]
+                      print()
+                      print("by source root (actually compiled):")
+                      roots = collections.Counter(
+                          os.sep.join(p.split(os.sep)[:2]) if len(p.split(os.sep)) > 2
+                          else p for p in rel)
+                      for r, n in roots.most_common(15):
+                          print(f"   {n:5d}  {r}")
+                      tests = [p for p in rel if "_test." in p or "/test" in p]
+                      print(f"\ntest-looking files among them: {len(tests)}")
+                      print("samples:")
+                      for p in sorted(rel)[:8]:
+                          print("   ", p)
                   PY
 
             - name: Analyse GN closure
