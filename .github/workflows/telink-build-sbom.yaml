@@ -68,8 +68,18 @@ jobs:
             # Ships the riscv64-zephyr-elf toolchain (Zephyr SDK 0.17.0), a
             # pre-cloned tl_zephyr plus all west modules and hal_telink blobs,
             # and exports TELINK_ZEPHYR_BASE / TELINK_ZEPHYR_SDK_DIR.
-            # TODO: pin by digest instead of the mutable :185 tag.
-            image: ghcr.io/project-chip/chip-build-telink:185
+            #
+            # Pinned by digest, not by the mutable :185 tag. The tag can be
+            # repointed upstream at any time, which would silently change the
+            # toolchain and make two SBOMs from the same commit incomparable.
+            # Resolved 2026-11-03 from the :185 tag via the OCI registry API
+            # (docker-content-digest). To bump deliberately:
+            #   TOK=$(curl -s "https://ghcr.io/token?scope=repository:project-chip/chip-build-telink:pull&service=ghcr.io" | jq -r .token)
+            #   curl -sI -H "Authorization: Bearer $TOK" \
+            #     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            #     https://ghcr.io/v2/project-chip/chip-build-telink/manifests/185 \
+            #     | grep -i docker-content-digest
+            image: ghcr.io/project-chip/chip-build-telink@sha256:144950e7fe7173953fa402768a5dac54d9deaac2313e510caaafdd64490ad58c
 
         steps:
             - name: Checkout
