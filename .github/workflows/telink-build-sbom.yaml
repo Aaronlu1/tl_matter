@@ -107,6 +107,14 @@ jobs:
               run: |
                   python3 scripts/tools/telink/enrich_sbom.py out/sbom
 
+            # Many customer-side SCA platforms ingest CycloneDX but not SPDX
+            # tag-value. Convert from the enriched set so it carries the purl
+            # and supplier fields.
+            - name: Convert SBOM to CycloneDX
+              run: |
+                  python3 scripts/tools/telink/spdx_to_cyclonedx.py \
+                    out/sbom/enriched -o out/sbom/telink-matter.cdx.json
+
             - name: Show SBOM summary
               if: always()
               run: |
@@ -153,3 +161,11 @@ jobs:
                   name: telink-sbom-spdx-enriched
                   if-no-files-found: warn
                   path: out/sbom/enriched/*.spdx
+
+            - name: Upload SBOM (CycloneDX)
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-sbom-cyclonedx
+                  if-no-files-found: warn
+                  path: out/sbom/*.cdx.json
