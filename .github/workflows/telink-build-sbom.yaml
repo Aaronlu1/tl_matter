@@ -145,29 +145,55 @@ jobs:
                   python3 - "$db" <<'PY'
                   import json, sys, collections, os
                   entries = json.load(open(sys.argv[1]))
-                  files = [e.get("file", "") for e in entries]
-                  print(f"entries           : {len(entries)}")
-                  print("distinct dirs     :",
-                        len({os.path.dirname(f) for f in files}))
 
-                  # Strip the common path prefix so the breakdown shows
-                  # src/app, src/protocols, ... rather than collapsing
-                  # everything under one absolute prefix.
-                  common = os.path.commonpath([os.path.dirname(f) for f in files]) if files else ""
-                  print(f"common prefix     : {common}")
+                  # GN emits paths relative to each entry's own "directory",
+                  # so normalise before grouping -- otherwise the first pass
+                  # collapsed everything into "../../..".
+                  abs_files = []
+                  for e in entries:
+                      f = e.get("file", "")
+                      d = e.get("directory", "")
+                      abs_files.append(os.path.normpath(os.path.join(d, f)))
+
+                  print(f"entries           : {len(entries)}")
+                  print("distinct dirs     :", len({os.path.dirname(f) for f in abs_files}))
                   print()
-                  print("compiled files by source root:")
-                  roots = collections.Counter()
-                  for f in files:
-                      rel = os.path.relpath(f, common) if common else f
-                      parts = rel.split(os.sep)
-                      roots[os.sep.join(parts[:2]) if len(parts) > 2 else parts[0]] += 1
-                  for k, n in roots.most_common(15):
+
+                  # The repo root is the deepest common ancestor of the
+                  # absolute paths.
+                  root = os.path.commonpath(abs_files) if abs_files else ""
+                  if not os.path.isdir(root):
+                      root = os.path.commonpath([os.path.dirname(f) for f in abs_files])
+                  print(f"inferred repo root: {root}")
+                  print()
+
+                  rel = [os.path.relpath(f, root) for f in abs_files]
+                  print("compiled files by top-level area:")
+                  areas = collections.Counter(p.split(os.sep)[0] for p in rel)
+                  for k, n in areas.most_common(15):
                       print(f"   {n:5d}  {k}")
+
                   print()
-                  print("sample entries:")
-                  for f in files[:3]:
-                      print("   ", f)
+                  print("Matter sources vs everything else:")
+                  for label, pred in [
+                      ("src/ (Matter stack)", lambda p: p.startswith("src" + os.sep)),
+                      ("third_party/",         lambda p: p.startswith("third_party" + os.sep)),
+                      ("_test / _fuzz files",  lambda p: "_test." in p or "_fuzz" in p or "test/" in p),
+                  ]:
+                      print(f"   {sum(1 for p in rel if pred(p)):5d}  {label}")
+
+                  print()
+                  print("sample NON-test entries (these are what we want):")
+                  shown = 0
+                  for p in rel:
+                      if "_test." in p or "/test" in p or "_fuzz" in p:
+                          continue
+                      print("   ", p)
+                      shown += 1
+                      if shown >= 8:
+                          break
+                  if shown == 0:
+                      print("    (none -- the database may only cover host tooling)")
                   PY
 
             # zspdx leaves PackageSupplier empty, PackageLicenseDeclared at
