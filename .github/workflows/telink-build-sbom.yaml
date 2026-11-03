@@ -249,27 +249,63 @@ jobs:
                   #   The input //config/telink/chip-gn:telink matches no
                   #   targets, configs or files.
                   # Stop guessing and ask gn what actually exists.
-                  # Redirect inside the quoted command again, then post-process
-                  # locally -- pattern syntax for gn ls is not worth guessing
-                  # at after three rounds of guessing.
+                  # gn ls without --all-toolchains listed 10322 targets and not
+                  # one of them was under config/telink/chip-gn -- they were all
+                  # host-side (examples, mobly, pw_unit_test). The embedded
+                  # targets live in the custom_toolchain
+                  # (config/telink/chip-gn/toolchain:zephyr), which is also why
+                  # 415 of the compile database entries are tests.
                   rm -f /tmp/alltgt.txt
-                  ./scripts/run_in_build_env.sh "gn ls $OUT > /tmp/alltgt.txt 2>/dev/null" || true
+                  ./scripts/run_in_build_env.sh \
+                    "gn ls $OUT --all-toolchains > /tmp/alltgt.txt 2>/dev/null" || true
+                  echo "targets (all toolchains) : $(wc -l < /tmp/alltgt.txt 2>/dev/null || echo 0)"
+                  echo "  ... mentioning telink  : $(grep -ci telink /tmp/alltgt.txt 2>/dev/null || echo 0)"
+                  echo
+                  echo "=== sample telink-related targets ==="
+                  grep -i telink /tmp/alltgt.txt 2>/dev/null | head -15 || echo "(none)"
 
-                  echo "total target lines : $(wc -l < /tmp/alltgt.txt 2>/dev/null || echo 0)"
+                  # The compile database carries the full command for each
+                  # entry, so the compiler binary alone tells us whether a file
+                  # was cross-compiled for the target or built for the host.
+                  # That is a far simpler discriminator than the dependency
+                  # closure, and it can be tested locally.
                   echo
-                  echo "=== targets under config/telink/chip-gn ==="
-                  grep -E "^//config/telink/chip-gn" /tmp/alltgt.txt 2>/dev/null | head -20 \
-                    || echo "(none)"
-                  echo
-                  echo "=== targets whose path mentions telink (first 30) ==="
-                  grep -i "telink" /tmp/alltgt.txt 2>/dev/null | head -30 || echo "(none)"
-                  echo
-                  echo "=== distinct top-level dirs in the target list ==="
-                  grep "^//" /tmp/alltgt.txt 2>/dev/null | sed 's|^//||; s|:.*||' \
-                    | cut -d/ -f1-2 | sort -u | head -25
-                  echo
-                  echo "=== first 15 raw target lines (shows label format) ==="
-                  head -15 /tmp/alltgt.txt 2>/dev/null
+                  echo "=== compile database entries by compiler ==="
+                  python3 - "$OUT/compile_commands.json" <<'PY'
+                  import json, sys, collections, os, re
+                  entries = json.load(open(sys.argv[1]))
+                  compilers = collections.Counter()
+                  by_cc = collections.defaultdict(list)
+                  for e in entries:
+                      cmd = e.get("command") or " ".join(e.get("arguments", []))
+                      m = re.search(r"(?:^|\s)([^\s]*g\+\+|gcc|clang\+\+|clang|cc)(?:\s|$)", cmd)
+                      name = os.path.basename(m.group(1)) if m else "<unknown>"
+                      compilers[name] += 1
+                      by_cc[name].append(e.get("file", ""))
+                  for k, n in compilers.most_common(10):
+                      print(f"   {n:5d}  {k}")
+                  print()
+                  for k in compilers:
+                      if "riscv" in k or "zephyr" in k:
+                          files = by_cc[k]
+                          print(f"cross-compiled with {k}: {len(files)} files")
+                          # Strip the common prefix so the breakdown reads
+                          # src/app, src/protocols, ... instead of collapsing.
+                          common = os.path.commonpath(files) if files else ""
+                          rel = [os.path.relpath(f, common) for f in files] if common else files
+                          roots = collections.Counter(
+                              os.sep.join(p.split(os.sep)[:2]) if len(p.split(os.sep)) > 2
+                              else p for p in rel)
+                          print("   by source root:")
+                          for r, n in roots.most_common(12):
+                              print(f"      {n:5d}  {r}")
+                          print("   samples:")
+                          for f in files[:5]:
+                              print("      ", f)
+                          break
+                  else:
+                      print("no riscv/zephyr compiler found in any command")
+                  PY
 
             - name: Analyse GN closure
               if: always()
