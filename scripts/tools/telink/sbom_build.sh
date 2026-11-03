@@ -91,6 +91,56 @@ fi
 echo "=== meta file: $META_PATH"
 
 # Step 3: generate the SBOM from the compile graph.
+
+# zspdx in this Zephyr revision (4.1.0 line) crashes on any target that has no
+# build product on disk:
+#
+#   walker.py, collectTargetDependencies:
+#     rd.ownerFileAbspath = pkg.targetBuildFile.abspath
+#     AttributeError: 'NoneType' object has no attribute 'abspath'
+#
+# pkg.targetBuildFile is only assigned by addBuildFile(), which returns None
+# when a target has no artifacts or its artifact is missing after the build --
+# yet collectTargetDependencies() is called unconditionally. Newer Zephyr
+# rewrote this code and guards the same spot with `if component.target_build_file:`,
+# so skipping is the intended semantics: with no build file there is no
+# build-file relationship to record.
+#
+# Patch it at runtime rather than forking the SDK. The check is written to fail
+# loudly if the surrounding source ever changes, instead of silently no-op'ing.
+patch_zspdx_walker() {
+    local walker="$TELINK_ZEPHYR_BASE/scripts/west_commands/zspdx/walker.py"
+    if [[ ! -f "$walker" ]]; then
+        echo "ERROR: zspdx walker not found at $walker" >&2
+        return 1
+    fi
+
+    python3 - "$walker" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    src = f.read()
+
+target = "            rd.ownerFileAbspath = pkg.targetBuildFile.abspath\n"
+guard = ("            if pkg.targetBuildFile is None:\n"
+         "                continue\n")
+
+if guard + target in src:
+    print("zspdx walker: guard already present, nothing to do")
+elif target in src:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(src.replace(target, guard + target, 1))
+    print("zspdx walker: patched missing None guard")
+else:
+    sys.exit("ERROR: could not locate the expected line in zspdx walker.py; "
+             "the pinned Zephyr revision may have changed")
+PY
+}
+
+echo "=== patching zspdx walker"
+patch_zspdx_walker
+
 echo "=== [3/3] west spdx"
 west spdx \
     --build-dir="$BUILD_DIR" \
