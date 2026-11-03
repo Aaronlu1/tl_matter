@@ -58,6 +58,17 @@ import uuid
 _LICENSE_SCAN_LINES = 20
 _LICENSE_RE = re.compile(r"SPDX-License-Identifier:\s*(.+)")
 
+# Matter sources do not carry SPDX tags at all -- they embed the full Apache-2.0
+# boilerplate, exactly like openthread does with BSD-3-Clause. A sample of 300
+# files found zero SPDX-License-Identifier lines. zspdx reports those files as
+# NONE for the same reason.
+#
+# Rather than repeat that, recognise the one boilerplate header that actually
+# appears here. This is deliberately narrow: it matches the Apache-2.0 grant
+# sentence, not "any licence-looking text", so it cannot silently mislabel
+# something under a different licence.
+_APACHE_BOILERPLATE = "Licensed under the Apache License, Version 2.0"
+
 
 def spdx_id_safe(text):
     """Make a string safe for use in an SPDXID (letters, digits, . and -)."""
@@ -130,19 +141,30 @@ def sha256_of(path):
 
 
 def license_of(path):
-    """Read an SPDX-License-Identifier from the file head, or None."""
+    """Return an SPDX license id for the file, or None.
+
+    Two passes over the file head: an explicit SPDX-License-Identifier tag
+    first, then the Apache-2.0 boilerplate grant sentence. The second exists
+    only because Matter sources use the latter and never the former.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            for _ in range(_LICENSE_SCAN_LINES):
-                line = f.readline()
-                if not line:
-                    break
-                m = _LICENSE_RE.search(line)
-                if m:
-                    value = m.group(1).strip().rstrip("*/").strip()
-                    return value or None
+            head = [f.readline() for _ in range(_LICENSE_SCAN_LINES)]
     except OSError:
-        pass
+        return None
+
+    for line in head:
+        if not line:
+            break
+        m = _LICENSE_RE.search(line)
+        if m:
+            value = m.group(1).strip().rstrip("*/").strip()
+            if value:
+                return value
+
+    if any(_APACHE_BOILERPLATE in line for line in head):
+        return "Apache-2.0"
+
     return None
 
 
