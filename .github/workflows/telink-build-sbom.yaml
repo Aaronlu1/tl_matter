@@ -40,7 +40,15 @@ on:
             - 'ci/**'
         paths:
             - .github/workflows/telink-build-sbom.yaml
+            # Every script the pipeline depends on, not just the build wrapper.
+            # A change to gn_sources_to_spdx.py alone silently triggered
+            # nothing, which is how this list came to be widened.
             - scripts/tools/telink/sbom_build.sh
+            - scripts/tools/telink/enrich_sbom.py
+            - scripts/tools/telink/spdx_to_cyclonedx.py
+            - scripts/tools/telink/sbom_review.py
+            - scripts/tools/telink/gn_sources_to_spdx.py
+            - scripts/tools/telink/module_licenses.json
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
