@@ -171,6 +171,50 @@ jobs:
                   python3 scripts/tools/telink/sbom_review.py \
                     out/sbom/enriched --out-dir out/sbom/review
 
+            # DIAGNOSTIC (read-only, remove once answered).
+            #
+            # SOURCE_DATE_EPOCH took 5 differing artifacts down to 4. The four
+            # that remain -- libapp.a, libzephyr.a, zephyr.elf, zephyr_pre0.elf
+            # -- are the ones that involve either the GN-built Matter objects
+            # or the final link. Two candidate causes:
+            #
+            #   1. Matter bakes __DATE__/__TIME__ in via
+            #      CHIP_DEVICE_CONFIG_FIRMWARE_BUILD_DATE/TIME. GCC is supposed
+            #      to read SOURCE_DATE_EPOCH for those, so if the embedded
+            #      string shows the commit date it worked and this is not it.
+            #   2. The Zephyr SDK ships its own binutils, whose ar may embed
+            #      member mtimes if it was not built --enable-deterministic-
+            #      archives. `ar tv` shows the stored mtimes directly.
+            - name: Diagnose remaining non-determinism
+              if: always()
+              run: |
+                  echo "=== SOURCE_DATE_EPOCH in this environment ==="
+                  echo "  ${SOURCE_DATE_EPOCH:-<unset>}"
+
+                  echo
+                  echo "=== ar member mtimes in libapp.a ==="
+                  AR=$(command -v riscv64-zephyr-elf-ar || echo ar)
+                  echo "  using: $AR"
+                  "$AR" tv out/telink-build/app/libapp.a 2>/dev/null | head -5
+
+                  echo
+                  echo "=== ar --version (deterministic-archives compiled in?) ==="
+                  "$AR" --version 2>/dev/null | head -2
+
+                  echo
+                  echo "=== embedded build date/time in zephyr.elf ==="
+                  echo "  (SOURCE_DATE_EPOCH resolves to 2026-11-09; anything else means GCC ignored it)"
+                  strings out/telink-build/zephyr/zephyr.elf 2>/dev/null \
+                    | grep -oE "[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4}" | sort -u | head -5
+                  strings out/telink-build/zephyr/zephyr.elf 2>/dev/null \
+                    | grep -oE "\b[0-9]{2}:[0-9]{2}:[0-9]{2}\b" | sort -u | head -5
+
+                  echo
+                  echo "=== build-id of zephyr.elf ==="
+                  command -v riscv64-zephyr-elf-readelf >/dev/null \
+                    && riscv64-zephyr-elf-readelf -n out/telink-build/zephyr/zephyr.elf 2>/dev/null \
+                       | grep -i "build id" | head -2
+
             - name: Show SBOM summary
               if: always()
               run: |
