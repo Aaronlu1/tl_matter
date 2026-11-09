@@ -48,6 +48,32 @@ fi
 # shellcheck disable=SC1091
 source "$ZEPHYR_BASE/zephyr-env.sh"
 
+# --- Reproducible builds -----------------------------------------------------
+#
+# Two builds of the same commit currently produce different hashes for five
+# artifacts -- libapp.a, libzephyr.a, libopenthread-ftd.a, zephyr.elf and
+# zephyr_pre0.elf -- while all 561 source files hash identically. ar embeds
+# member mtimes and the linker stamps a build-id, so a customer cannot verify a
+# shipped binary against the SBOM.
+#
+# SOURCE_DATE_EPOCH is the standard lever: binutils and GCC read it instead of
+# the wall clock. Pin it to the commit timestamp, which is the only value that
+# is both fixed per revision and meaningful in the output.
+#
+# Deliberately not doing -ffile-prefix-map here. CI always builds at
+# /__w/tl_matter/tl_matter, so paths already agree between runs; that flag
+# matters for reproducing a build on a different machine, which is a separate
+# question. Measure before adding more.
+if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
+    SOURCE_DATE_EPOCH="$(git -C "$PWD" log -1 --format=%ct 2>/dev/null || true)"
+fi
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    export SOURCE_DATE_EPOCH
+    echo "=== SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
+else
+    echo "=== WARNING: could not determine SOURCE_DATE_EPOCH; build will not be reproducible"
+fi
+
 # Resolve to absolute paths so `west spdx` and `west build` agree on the build
 # directory regardless of what the caller's cwd was.
 BUILD_DIR="$(realpath -m "$BUILD_DIR")"
