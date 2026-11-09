@@ -52,6 +52,7 @@ on:
             # The app config header carries the deterministic-build-date
             # overrides, so changing it must rebuild.
             - examples/*/telink/include/CHIPProjectConfig.h
+            - config/telink/**
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
