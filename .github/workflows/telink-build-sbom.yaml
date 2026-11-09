@@ -49,9 +49,6 @@ on:
             - scripts/tools/telink/sbom_review.py
             - scripts/tools/telink/gn_sources_to_spdx.py
             - scripts/tools/telink/module_licenses.json
-            # The app config header carries the deterministic-build-date
-            # overrides, so changing it must rebuild.
-            - examples/*/telink/include/CHIPProjectConfig.h
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}

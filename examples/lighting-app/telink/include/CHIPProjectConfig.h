@@ -27,23 +27,6 @@
 
 #pragma once
 
-// --- Reproducible builds -----------------------------------------------------
-//
-// CHIPDeviceConfig.h defines these two as __DATE__ / __TIME__ behind an
-// #ifndef, with the comment "Useful for deterministic builds" -- overriding
-// them here is the intended mechanism, not a workaround.
-//
-// Without this, the compiled firmware embeds the wall-clock time and two
-// builds of the same commit produce different .a and .elf hashes, so an SBOM
-// cannot be used to verify a shipped binary.
-//
-// The values must stay parseable by src/include/platform/BuildTime.h:
-//   date: "Mmm DD YYYY", 11 chars, day space-padded ("Jan  1 1970")
-//   time: "HH:MM:SS", 8 chars
-// Changing the shape breaks COMPUTE_BUILD_YEAR/DAY/MONTH at compile time.
-#define CHIP_DEVICE_CONFIG_FIRMWARE_BUILD_DATE "Jan  1 1970"
-#define CHIP_DEVICE_CONFIG_FIRMWARE_BUILD_TIME "00:00:00"
-
 // Use a default pairing code if one hasn't been provisioned in flash.
 #define CHIP_DEVICE_CONFIG_USE_TEST_SETUP_PIN_CODE 20202021
 #define CHIP_DEVICE_CONFIG_USE_TEST_SETUP_DISCRIMINATOR 0xF00
