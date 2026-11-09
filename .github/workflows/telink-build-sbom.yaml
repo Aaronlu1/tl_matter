@@ -185,6 +185,51 @@ jobs:
             #   2. The Zephyr SDK ships its own binutils, whose ar may embed
             #      member mtimes if it was not built --enable-deterministic-
             #      archives. `ar tv` shows the stored mtimes directly.
+            - name: Locate the wall-clock timestamp
+              if: always()
+              run: |
+                  # The elf carries two times: 09:40:44 (= SOURCE_DATE_EPOCH, so
+                  # GCC honoured it for the CMake side) and a later wall-clock
+                  # value. Find which object holds the second one -- that names
+                  # the build path that is not inheriting the variable.
+                  EXPECTED="$(git log -1 --format=%ct)"
+                  EXPECTED_HMS="$(date -u -d "@$EXPECTED" '+%H:%M:%S' 2>/dev/null || echo '?')"
+                  echo "SOURCE_DATE_EPOCH -> $EXPECTED_HMS"
+
+                  TMP=$(mktemp -d)
+                  for a in out/telink-build/app/libapp.a out/telink-build/zephyr/libzephyr.a; do
+                    [ -f "$a" ] || continue
+                    echo
+                    echo "=== $a ==="
+                    D="$TMP/$(basename "$a")"; mkdir -p "$D"
+                    cp "$a" "$D/" 2>/dev/null || true
+                    (cd "$D" && ar x "$(basename "$a")" 2>/dev/null) || true
+                    n=0
+                    for o in "$D"/*.obj "$D"/*.o; do
+                      [ -e "$o" ] || continue
+                      t=$(strings "$o" 2>/dev/null | grep -oE "\b[0-9]{2}:[0-9]{2}:[0-9]{2}\b" | sort -u | tr '\n' ' ' || true)
+                      if [ -n "$t" ]; then
+                        marker=""
+                        case "$t" in *"$EXPECTED_HMS"*) marker=" <- matches SOURCE_DATE_EPOCH";; *) marker=" <- WALL CLOCK, did not inherit";; esac
+                        echo "  $(basename "$o"): $t$marker"
+                        n=$((n+1))
+                      fi
+                      [ "$n" -ge 8 ] && break
+                    done
+                    [ "$n" -eq 0 ] && echo "  (no object carries a time string)"
+                  done
+                  rm -rf "$TMP"
+
+                  echo
+                  echo "=== is SOURCE_DATE_EPOCH visible to the GN build? ==="
+                  # gn/ninja are launched by CMake's ExternalProject. If the
+                  # variable does not reach them, GN objects carry wall-clock
+                  # time while CMake objects carry the pinned one.
+                  GN_OUT=out/telink-build/modules/chip-module
+                  echo "  gn out dir: $GN_OUT"
+                  strings "$GN_OUT"/lib/*.a 2>/dev/null \
+                    | grep -oE "\b[0-9]{2}:[0-9]{2}:[0-9]{2}\b" | sort -u | head -5 || true
+
             - name: Diagnose remaining non-determinism
               if: always()
               run: |
