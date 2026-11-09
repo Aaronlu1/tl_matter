@@ -22,14 +22,6 @@ chip_build_tests = false
 
 chip_project_config_include = "<CHIPProjectConfig.h>"
 chip_system_project_config_include = "<CHIPProjectConfig.h>"
-# CHIPDeviceConfig.h pulls its project config in through
-# CHIP_DEVICE_PROJECT_CONFIG_INCLUDE, which is a *different* macro from
-# CHIP_PROJECT_CONFIG_INCLUDE. Without this line that include is empty on
-# Telink, so anything defined in CHIPProjectConfig.h that CHIPDeviceConfig.h
-# guards with #ifndef -- notably the deterministic-build date/time overrides --
-# is silently ignored. Other platforms (nxp, realtek, the linux examples) set
-# it.
-chip_device_project_config_include = "<CHIPProjectConfig.h>"
 chip_ble_project_config_include = ""
 
 chip_crypto = "mbedtls"
