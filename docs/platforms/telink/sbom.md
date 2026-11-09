@@ -82,26 +82,50 @@ not work:
   `riscv64-zephyr-elf-g++`, `pw_unit_test` files included, so it
   discriminates nothing.
 
-### Source hashes are reproducible; binary hashes are not
+### Builds are reproducible
 
-Two CI runs of the same commit produced identical hashes for all **561 source
-files**, but the five compiled artifacts differed:
+Two CI runs of the same commit produce **byte-identical firmware**:
 
-```
-./app/libapp.a
-./modules/openthread/build/src/core/libopenthread-ftd.a
-./zephyr/libzephyr.a
-./zephyr/zephyr.elf
-./zephyr/zephyr_pre0.elf
-```
+| Artifact | Status | Shipped |
+| --- | --- | --- |
+| `zephyr.bin` | byte-identical | yes — this is what gets flashed |
+| `zephyr.elf` | byte-identical | yes — for debugging |
+| `zephyr.map` | differs (see below) | no |
+| 41 of 42 `.a` archives | byte-identical | no |
+| `zephyr/libzephyr.a` | differs (see below) | no |
 
-`ar` archives embed member mtimes and ELF files carry a build-id, so these are
-not byte-reproducible with the current build flags.
+So the SBOM can be used to verify that a shipped binary matches a given
+build, not merely to audit which sources went into it.
 
-**Consequence:** the SBOM can be used to audit *what source went into a
-build*, but it **cannot** yet be used to verify that a shipped binary matches
-a given SBOM. Doing that requires a reproducible build (`SOURCE_DATE_EPOCH`
-plus `-ffile-prefix-map`), which is not currently enabled.
+Two settings make this work, both required:
+
+- **`SOURCE_DATE_EPOCH`**, pinned by `sbom_build.sh` to the commit timestamp.
+  binutils and GCC read it instead of the wall clock.
+- **`examples/platform/telink/build_info.cmake`** must honour it. That script
+  used to take the build timestamp from `datetime.now()` at configure time and
+  bake it into the firmware through
+  `target_compile_definitions(app PRIVATE BUILD_TIMESTAMP=...)`, which made
+  every build differ. It now derives the value from `SOURCE_DATE_EPOCH` when
+  set and keeps the wall-clock fallback otherwise, so the timestamp stays real
+  for field debugging.
+
+#### The two remaining differences are both benign
+
+`zephyr.map` records the temporary object names GCC's LTO pass creates under
+`/tmp` (e.g. `ccVnKmiy.ltrans0.ltrans.o`), which are random per build. The
+names do not reach the linked output — `zephyr.elf` is identical — and the map
+is a build report, not something that ships.
+
+`zephyr/libzephyr.a` differs while `zephyr.elf` does not, which points at
+archive-level metadata (member order under parallel compilation) rather than
+object contents. It is an intermediate that does not ship. Worth knowing about
+if a future consumer hashes intermediates rather than the firmware.
+
+> **If reproducibility ever regresses**, diff two builds of the same commit
+> before reasoning about the build system. Locating the cause of the
+> `BUILD_TIMESTAMP` problem took one comparison of two firmware images and
+> gave the exact file offset, virtual address and byte content; six earlier
+> rounds of reading CMake and Kconfig in search of a missing macro did not.
 
 ## Known limitations
 
