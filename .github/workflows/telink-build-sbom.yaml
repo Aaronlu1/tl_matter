@@ -49,6 +49,9 @@ on:
             - scripts/tools/telink/sbom_review.py
             - scripts/tools/telink/gn_sources_to_spdx.py
             - scripts/tools/telink/module_licenses.json
+            # build_info.cmake generates BUILD_TIMESTAMP, which is compiled
+            # into the firmware and decides whether the binary is reproducible.
+            - examples/platform/telink/**
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
