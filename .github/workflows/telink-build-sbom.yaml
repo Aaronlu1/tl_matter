@@ -170,6 +170,40 @@ jobs:
                   python3 scripts/tools/telink/spdx_to_cyclonedx.py \
                     out/sbom/enriched -o out/sbom/telink-matter.cdx.json
 
+            # Grype, not Trivy. Trivy's SPDX decoder reads only purl
+            # (parseExternalReferences filters RefTypePurl and skips
+            # everything else), so it cannot see the CPE that zspdx emits and
+            # reports zero findings for every C/C++ library here. Grype reads
+            # CPEs through Syft's extractCPEs().
+            #
+            # Only the component-bearing documents are scanned. build.spdx
+            # holds CMake build targets -- `debug`, `kernel`, `offsets` -- with
+            # no version, no purl and no CPE, and Grype matches them by name
+            # against unrelated packages in other ecosystems. `debug` produced
+            # three false positives against the npm package of that name.
+            #
+            # report-only for now: the findings need triage before this can
+            # gate anything.
+            - name: Scan SBOM for vulnerabilities (Grype)
+              run: |
+                  curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+                    | sh -s -- -b /usr/local/bin
+                  grype version
+                  mkdir -p out/sbom/vuln
+                  for doc in app zephyr modules-deps matter-sources; do
+                    f="out/sbom/enriched/$doc.spdx"
+                    [ -e "$f" ] || continue
+                    grype "sbom:$f" -o table > "out/sbom/vuln/$doc.txt" 2>&1 || true
+                  done
+                  echo "--- findings by document ---"
+                  for f in out/sbom/vuln/*.txt; do
+                    n=$(grep -cE '^[a-zA-Z0-9._-]+ +[^ ]+ +[^ ]+ +(Critical|High|Medium|Low|Negligible)' "$f" || true)
+                    printf '   %-24s %s findings\n' "$(basename "$f")" "$n"
+                  done
+                  echo
+                  echo "--- detail ---"
+                  cat out/sbom/vuln/*.txt
+
             # Surfaces the components that need a human decision. In this build
             # that is ~12 of 21 real components; the other 121 packages are
             # CMake build targets and are counted but not listed.
@@ -242,3 +276,11 @@ jobs:
                   path: |
                       out/sbom/review/sbom-review.csv
                       out/sbom/review/sbom-gaps.md
+
+            - name: Upload vulnerability scan
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: telink-sbom-vuln
+                  if-no-files-found: warn
+                  path: out/sbom/vuln/*.txt
