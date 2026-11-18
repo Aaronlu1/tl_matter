@@ -196,9 +196,20 @@ jobs:
                     grype "sbom:$f" -o table > "out/sbom/vuln/$doc.txt" 2>&1 || true
                   done
                   echo "--- findings by document ---"
+                  # Count vulnerability IDs, not table columns. The table is
+                  # name | installed | fixed-in | type | vulnerability | severity,
+                  # so severity is the sixth column and any positional match is
+                  # fragile -- an earlier version counted zero rows for a
+                  # document that actually held 16 findings.
                   for f in out/sbom/vuln/*.txt; do
-                    n=$(grep -cE '^[a-zA-Z0-9._-]+ +[^ ]+ +[^ ]+ +(Critical|High|Medium|Low|Negligible)' "$f" || true)
+                    n=$(grep -cE '(CVE-[0-9]{4}-[0-9]{4,}|GHSA-[a-z0-9-]+)' "$f" || true)
                     printf '   %-24s %s findings\n' "$(basename "$f")" "$n"
+                  done
+                  echo
+                  echo "--- severity breakdown ---"
+                  for s in Critical High Medium Low Negligible; do
+                    n=$(cat out/sbom/vuln/*.txt 2>/dev/null | grep -cE "(CVE-[0-9]{4}-[0-9]{4,}|GHSA-[a-z0-9-]+) +$s" || true)
+                    printf '   %-12s %s\n' "$s" "$n"
                   done
                   echo
                   echo "--- detail ---"
