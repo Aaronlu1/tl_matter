@@ -266,6 +266,35 @@ else()
 endif()
 
 # ==============================================================================
+# Define 'telink-sbom' target for generating the SPDX bill of materials
+# ==============================================================================
+#
+#   west build -b <board> <app> -- -DTELINK_SBOM=ON
+#   west build -t telink-sbom
+#
+# The first command configures and builds; -DTELINK_SBOM=ON is what makes
+# common.cmake create the CMake file-based API query that zspdx walks. The
+# second generates the SPDX documents from the graph that build produced.
+#
+# Not part of ALL: it must run after the firmware exists, and an ordinary
+# developer build should not pay for it. The explicit dependency below makes
+# `west build -t telink-sbom` safe to run on its own.
+#
+# WORKING_DIRECTORY is the repository root, matching where the pipeline invokes
+# `west` today, rather than the build directory.
+if(TELINK_SBOM)
+    add_custom_target(telink-sbom
+        COMMAND west spdx
+                --build-dir=${CMAKE_BINARY_DIR}
+                --spdx-dir=${CMAKE_BINARY_DIR}/sbom
+        WORKING_DIRECTORY ${CHIP_ROOT}
+        COMMENT "Generating SPDX bill of materials"
+        USES_TERMINAL
+    )
+    add_dependencies(telink-sbom ${ZEPHYR_FINAL_EXECUTABLE})
+endif()
+
+# ==============================================================================
 # Define 'build_mcuboot' target for building the MCUBoot bootloader
 # ==============================================================================
 

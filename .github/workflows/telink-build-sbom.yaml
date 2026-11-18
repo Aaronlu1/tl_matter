@@ -51,7 +51,11 @@ on:
             - scripts/tools/telink/module_licenses.json
             # build_info.cmake generates BUILD_TIMESTAMP, which is compiled
             # into the firmware and decides whether the binary is reproducible.
+            # common.cmake carries the TELINK_SBOM option that enables the
+            # CMake file-based API.
             - examples/platform/telink/**
+            # The chip-module CMakeLists defines the telink-sbom target.
+            - config/telink/**
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}

@@ -88,11 +88,16 @@ echo "=== sbom dir   : $SBOM_DIR"
 echo "=== zephyr base: $ZEPHYR_BASE"
 echo
 
-# Step 1: enable the CMake file-based API *before* configuring.
-echo "=== [1/3] west spdx --init"
-west spdx --init --build-dir="$BUILD_DIR"
-
-# Step 2: build.
+# Step 1: build.
+#
+# Two things are passed to CMake here:
+#
+# TELINK_SBOM=ON makes examples/platform/telink/common.cmake create the CMake
+# file-based API query file at configure time. zspdx needs that query to exist
+# while CMake runs, and CMake writes the replies during its generate step, so
+# configure is early enough. This replaces the `west spdx --init` this script
+# used to run first -- the ordering constraint is now the build system's
+# problem rather than the script's.
 #
 # CONFIG_BUILD_OUTPUT_META=y is what makes the build emit the meta file that
 # zspdx requires. Without it Zephyr's top-level CMakeLists.txt actively deletes
@@ -100,8 +105,20 @@ west spdx --init --build-dir="$BUILD_DIR"
 # "cannot find a valid zephyr_meta.yml required for SPDX generation".
 # This mirrors Zephyr's own SBOM test, which sets exactly this one option:
 #   tests/application_development/software_bill_of_materials/prj.conf
-echo "=== [2/3] west build -b $BOARD"
-west build -d "$BUILD_DIR" -b "$BOARD" "$APP_DIR" -- -DCONFIG_BUILD_OUTPUT_META=y
+echo "=== [1/2] west build -b $BOARD"
+west build -d "$BUILD_DIR" -b "$BOARD" "$APP_DIR" -- \
+    -DTELINK_SBOM=ON \
+    -DCONFIG_BUILD_OUTPUT_META=y
+
+# Confirm the query file the build was supposed to create is there. If it is
+# not, `west spdx` below would fail with a confusing "no codemodel" message
+# much later.
+if [[ ! -e "$BUILD_DIR/.cmake/api/v1/query/codemodel-v2" ]]; then
+    echo "ERROR: $BUILD_DIR/.cmake/api/v1/query/codemodel-v2 is missing." >&2
+    echo "       -DTELINK_SBOM=ON did not take effect." >&2
+    exit 1
+fi
+echo "=== file-based API query present"
 
 # The file is NOT called zephyr_meta.yml -- that is only the wording of zspdx's
 # error message. Zephyr computes KERNEL_META_NAME=${KERNEL_NAME}.meta in
@@ -167,7 +184,7 @@ PY
 echo "=== patching zspdx walker"
 patch_zspdx_walker
 
-echo "=== [3/3] west spdx"
+echo "=== [2/2] west spdx"
 west spdx \
     --build-dir="$BUILD_DIR" \
     --spdx-dir="$SBOM_DIR" \

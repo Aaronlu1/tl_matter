@@ -13,6 +13,35 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# ==============================================================================
+# SBOM: enable the CMake file-based API before Zephyr configures
+# ==============================================================================
+#
+# `west spdx` (zspdx) walks the CMake file-based API codemodel. The query file
+# has to exist while CMake is running, and CMake writes the replies during its
+# generate step -- configure happens first, so creating it here is early enough.
+#
+# This runs at the top of common.cmake, which every Telink example includes and
+# which is processed before find_package(Zephyr) below. That makes one file
+# cover every example.
+#
+# Zephyr's own SBOM test does the same thing from a per-application
+# PreLoad.cmake and notes there that it is "an undocumented feature". This
+# relies only on documented CMake behaviour and needs no west invocation at
+# configure time -- `west spdx --init` creates exactly this directory and empty
+# file.
+#
+# Off by default so ordinary developer builds are untouched; a build that wants
+# an SBOM passes -DTELINK_SBOM=ON.
+option(TELINK_SBOM "Enable SBOM generation (CMake file-based API + build target)" OFF)
+
+if(TELINK_SBOM)
+    set(TELINK_SBOM_QUERY_DIR "${CMAKE_BINARY_DIR}/.cmake/api/v1/query")
+    file(MAKE_DIRECTORY "${TELINK_SBOM_QUERY_DIR}")
+    file(TOUCH "${TELINK_SBOM_QUERY_DIR}/codemodel-v2")
+    message(STATUS "SBOM: CMake file-based API enabled (${TELINK_SBOM_QUERY_DIR}/codemodel-v2)")
+endif()
+
 # Generate Zephyr version files for backward compatibility
 file(STRINGS "$ENV{ZEPHYR_BASE}/VERSION" ZEPHYR_VERSION_STRING REGEX "[0-9]+")
 string(REGEX REPLACE "[^0-9;]" "" ZEPHYR_VERSION_STRING "${ZEPHYR_VERSION_STRING}")
