@@ -186,9 +186,15 @@ def enrich_block(lines, default_supplier, license_map):
     additions = {}  # field -> value, inserted after the block's leading fields
 
     # --- PackageSupplier -------------------------------------------------
+    #
+    # SPDX 2.3 requires a typed prefix here:
+    #   PackageSupplier: [Person: | Organization: | NOASSERTION] <value>
+    # Emitting a bare name is a spec violation that strict parsers reject
+    # outright -- Syft refuses to decode the whole document with
+    # "invalid subvalue format for <name> (no colon found)".
     if field(lines, "PackageSupplier") is None:
         org, _ = repo_from_location(dl)
-        additions["PackageSupplier"] = org if org else default_supplier
+        additions["PackageSupplier"] = f"Organization: {org if org else default_supplier}"
 
     # --- PackageLicenseDeclared -----------------------------------------
     if field(lines, "PackageLicenseDeclared") == "NOASSERTION":
