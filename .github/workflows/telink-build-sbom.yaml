@@ -49,6 +49,10 @@ on:
             - scripts/tools/telink/sbom_review.py
             - scripts/tools/telink/gn_sources_to_spdx.py
             - scripts/tools/telink/module_licenses.json
+            # The CPE map decides which components the scan can see at all, so
+            # an edit to it has to rebuild -- otherwise a stale entry is silently
+            # in force on every future run.
+            - scripts/tools/telink/module_cpes.json
             # build_info.cmake generates BUILD_TIMESTAMP, which is compiled
             # into the firmware and decides whether the binary is reproducible.
             # common.cmake carries the TELINK_SBOM option that enables the
